@@ -42,18 +42,18 @@ pip install -U -r requirements.txt
 > ```
 
 ---
-
-## 2. Cài đặt nhanh `llama-server` (`llama.cpp`)
+## 2. Cài đặt và sử dụng `llama-server` (`llama.cpp`) (không bắt buộc)
+### 2.1. Cài đặt nhanh `llama-server`
 
 `llama-server` dùng để chạy model **Gemma 4 E4B** trên GPU (khuyên dùng bản **Vulkan** cho card AMD/Intel, hoặc bản **CUDA** cho card NVIDIA).
 
-### Linux (Bash)
+#### Linux (Bash)
 - **Tải bản build sẵn:** Vào trang [Releases của ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases) → chọn bản `bXXXX` mới nhất → tải file `llama-bXXXX-bin-ubuntu-vulkan-x64.tar.gz` → giải nén và thêm thư mục chứa `llama-server` vào `PATH`.
 
-### Windows (PowerShell)
+#### Windows (PowerShell)
 - Vào trang [Releases của ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases) → chọn bản `bXXXX` mới nhất → tải file `llama-bXXXX-bin-win-vulkan-x64.zip` (hoặc bản `win-cuda` nếu dùng GPU NVIDIA) → giải nén (ví dụ `C:\llama-cpp`) và thêm đường dẫn đó vào `PATH` của Windows.
 
-### Kiểm tra GPU đã được nhận diện
+#### Kiểm tra GPU đã được nhận diện
 ```bash
 llama-server --list-devices
 ```
@@ -61,16 +61,16 @@ Nếu thấy tên card màn hình của bạn (ví dụ `Vulkan0: AMD Radeon RX 
 
 ---
 
-## 3. Khởi động `llama-server` để dịch tiếng Việt bằng Gemma 4 E4B (không bắt buộc)
+### 2.2. Khởi động `llama-server` để dịch tiếng Việt bằng Gemma 4 E4B
 
 Mở một cửa sổ terminal riêng và chạy lệnh sau để bật máy chủ dịch cục bộ (lần đầu tiên sẽ tự tải model từ Hugging Face; cờ `enable_thinking: false` giúp tắt chế độ suy luận để dịch nhanh theo thời gian thực):
 
-### Linux (Bash)
+#### Linux (Bash)
 ```bash
 llama-server -hf unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL --host 127.0.0.1 --port 8080 -c 2048 -ngl 99 --chat-template-kwargs '{"enable_thinking": false}'
 ```
 
-### Windows (PowerShell)
+#### Windows (PowerShell)
 ```powershell
 llama-server -hf unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL --host 127.0.0.1 --port 8080 -c 2048 -ngl 99 --chat-template-kwargs '{\"enable_thinking\": false}'
 ```
