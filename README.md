@@ -120,7 +120,7 @@ Cài một trong hai tiện ích mở rộng sau cho trình duyệt của bạn 
 ### Bước 2: Cài đặt file Userscript bằng link trực tiếp
 Nhấn trực tiếp vào link cài đặt dưới đây:
 
-**[Cài đặt YouTube Audio Streamer Userscript](https://example.com/userscript-ytb-audio-streamer.user.js)**
+**[Cài đặt YouTube Audio Streamer Userscript](https://github.com/TVTIT/cs2-live-subtitle/raw/refs/heads/main/userscript-ytb-audio-streamer.user.js)**
 
 **Violentmonkey** hoặc **Tampermonkey** sẽ tự động nhận diện và mở trang xác nhận — bạn chỉ cần bấm **Confirm installation / Cài đặt** là xong.
 
