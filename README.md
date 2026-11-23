@@ -86,7 +86,13 @@ llama-server -hf unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL --host 127.0.0.1 --p
 
 ## 4. Chạy script Python lần đầu tiên
 
-Mở một cửa sổ terminal khác tại thư mục dự án, kích hoạt `venv` và khởi chạy `main.py`:
+Mở một cửa sổ terminal khác tại thư mục dự án, chuyển đến folder `src` chứa script python:
+
+```bash
+cd src
+```
+
+Kích hoạt `venv` và khởi chạy `main.py`:
 
 ### Linux (Bash)
 ```bash
