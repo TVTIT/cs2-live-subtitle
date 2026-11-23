@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube Audio Streamer
-// @namespace    https://example.com
-// @version      1.0.0
+// @namespace    https://github.com/TVTIT/cs2-live-subtitle/raw/refs/heads/main/userscript-ytb-audio-streamer.user.js
+// @version      1.0.1
 // @description  Bắt âm thanh trực tiếp từ video YouTube (16kHz Mono Float32LE) bằng Web Audio API và gửi qua WebSocket cục bộ sang script Python sherpa-onnx.
 // @match        https://www.youtube.com/*
 // @match        https://m.youtube.com/*
