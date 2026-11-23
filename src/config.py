@@ -77,15 +77,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "hotwords_file": "",  # Chỉ áp dụng cho Zipformer; Nemotron/Moonshine tự động bỏ qua
     "hotwords_score": 2.0,
     "font_size": 22,
-    # Cấu hình cửa sổ phụ đề Tiếng Việt thứ 2 (dịch qua Local LLM Gemma 3 4B)
+    # Chế độ hiển thị phụ đề:
+    # - "userscript": gửi phụ đề về Userscript hiển thị thẳng trong trình phát YouTube (không mở cửa sổ PyQt6, không bị đè khi Fullscreen)
+    # - "window": mở cửa sổ phụ đề nổi PyQt6 riêng trên desktop
+    # - "both": hiển thị song song cả cửa sổ PyQt6 lẫn trong trình phát YouTube
+    "display_mode": "userscript",
+    # Cấu hình dịch tiếng Việt qua Local LLM (llama-server / Ollama)
     "enable_vi_translation": True,
-    # Mặc định trỏ tới llama-server (Vulkan). Nếu dùng Ollama, đổi thành:
-    # "http://127.0.0.1:11434/v1/chat/completions" và llm_model thành "gemma3:4b-it-qat"
     "llm_api_url": "http://127.0.0.1:8080/v1/chat/completions",
-    "llm_model": "gemma-3-4b-it-qat",
+    "llm_model": "translate-gemma-4-sub-e4b",
     "llm_api_key": "",
     "llm_translate_interval": 1.0,  # Chu kỳ dịch nháp câu đang nói dở (giây); hết câu dịch ngay lập tức
-    "llm_context_sentences": 2,  # Số câu tiếng Anh trước đó gửi kèm làm ngữ cảnh
+    "llm_context_sentences": 2,  # Số câu trước đó gửi kèm làm ngữ cảnh
     "llm_system_prompt": "",  # Để trống để dùng system prompt CS2 mặc định
 }
 

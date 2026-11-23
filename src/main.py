@@ -1,20 +1,20 @@
-"""Điểm chạy chính (CLI cấu hình -> Load sherpa-onnx -> WebSocket Server & 2 Overlay EN/VI)."""
+"""Điểm chạy chính (CLI cấu hình -> Load sherpa-onnx -> WebSocket Server + Overlay PyQt6 / Userscript)."""
 
 from __future__ import annotations
 
 import signal
 import sys
+import time
 from pathlib import Path
-
-from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QApplication
+from typing import Any
 
 from asr_engine import SherpaASREngine
 from config import load_config, save_config
 from llm_translator import LocalLLMTranslator
 from model_manager import resolve_model_interactive
-from subtitle_overlay import SubtitleOverlay
 from ws_server import AudioWebSocketWorker, check_port_available
+
+VALID_DISPLAY_MODES = ("userscript", "window", "both")
 
 
 def prompt_ws_address(cfg: dict) -> tuple[str, int]:
@@ -56,13 +56,26 @@ def resolve_hotwords_path(cfg: dict, model_type: str) -> str:
     return ""
 
 
+def normalize_display_mode(cfg: dict[str, Any]) -> str:
+    mode = str(cfg.get("display_mode", "userscript")).strip().lower()
+    if mode not in VALID_DISPLAY_MODES:
+        print(
+            f"[Cảnh báo] display_mode='{mode}' không hợp lệ "
+            f"(chỉ nhận: {', '.join(VALID_DISPLAY_MODES)}). Dùng mặc định 'userscript'."
+        )
+        mode = "userscript"
+    cfg["display_mode"] = mode
+    return mode
+
+
 def main() -> int:
     print("============================================================")
-    print("  CS2 LIVE SUBTITLES (Sherpa-ONNX + Local LLM Gemma 3 4B)   ")
+    print("  CS2 LIVE SUBTITLES (Sherpa-ONNX + Local LLM + YouTube)    ")
     print("============================================================")
 
     # Bước 1: Đọc config.json và kiểm tra/tải model ASR
     cfg = load_config()
+    display_mode = normalize_display_mode(cfg)
     _, model_info = resolve_model_interactive(cfg)
 
     # Bước 2: Kiểm tra địa chỉ WebSocket Server (nhập ip:port mới nếu cổng bị chiếm)
@@ -80,10 +93,16 @@ def main() -> int:
     )
     print("[AI] Nạp model thành công!")
 
-    # Bước 4: Mở cửa sổ phụ đề tiếng Anh (+ cửa sổ tiếng Việt nếu bật) và khởi động các luồng nền
-    app = QApplication(sys.argv)
     enable_vi = bool(cfg.get("enable_vi_translation", True))
     font_size = int(cfg.get("font_size", 22))
+    use_window = display_mode in ("window", "both")
+    send_to_userscript = display_mode in ("userscript", "both")
+
+    print(f"[Hiển thị] Chế độ hiện tại (config.json -> display_mode): {display_mode}")
+
+    app = None
+    overlay_en = None
+    overlay_vi = None
 
     closing_flag = {"done": False}
     worker_holder: dict[str, AudioWebSocketWorker | None] = {"worker": None}
@@ -99,35 +118,65 @@ def main() -> int:
         t = translator_holder.get("translator")
         if t is not None:
             t.stop()
-        app.quit()
+        if app is not None:
+            app.quit()
 
-    # Cửa sổ 1: Phụ đề Tiếng Anh (nằm phía trên cửa sổ Tiếng Việt khi bật song ngữ)
-    overlay_en = SubtitleOverlay(
-        font_size=font_size,
-        on_close_callback=_shutdown_all,
-        window_title="CS2 Live Subtitles (EN)",
-        initial_text="Sẵn sàng nhận phụ đề tiếng Anh...",
-        bottom_offset=200 if enable_vi else 48,
-    )
+    if use_window:
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QApplication
+        from subtitle_overlay import SubtitleOverlay
 
-    overlay_vi: SubtitleOverlay | None = None
-    translator: LocalLLMTranslator | None = None
-
-    if enable_vi:
-        llm_url = str(cfg.get("llm_api_url", "http://127.0.0.1:8080/v1/chat/completions"))
-        llm_model = str(cfg.get("llm_model", "gemma-3-4b-it-qat"))
-        overlay_vi = SubtitleOverlay(
+        app = QApplication(sys.argv)
+        overlay_en = SubtitleOverlay(
             font_size=font_size,
             on_close_callback=_shutdown_all,
-            window_title=f"CS2 Live Subtitles (VI - {llm_model})",
-            initial_text="Sẵn sàng dịch phụ đề tiếng Việt (Local LLM)...",
-            bottom_offset=48,
+            window_title="CS2 Live Subtitles (EN)",
+            initial_text="Sẵn sàng nhận phụ đề tiếng Anh...",
+            bottom_offset=200 if enable_vi else 48,
         )
+        if enable_vi:
+            llm_model = str(cfg.get("llm_model", "translate-gemma-4-sub-e4b"))
+            overlay_vi = SubtitleOverlay(
+                font_size=font_size,
+                on_close_callback=_shutdown_all,
+                window_title=f"CS2 Live Subtitles (VI - {llm_model})",
+                initial_text="Sẵn sàng dịch phụ đề tiếng Việt (Local LLM)...",
+                bottom_offset=48,
+            )
+
+    def _on_en_status(msg: str) -> None:
+        if overlay_en is not None:
+            overlay_en.status_signal.emit(msg)
+        else:
+            print(f"[ASR] {msg}")
+        if send_to_userscript and worker_holder["worker"] is not None:
+            worker_holder["worker"].send_json({"type": "status", "lang": "en", "text": msg})
+
+    def _on_vi_status(msg: str) -> None:
+        if overlay_vi is not None:
+            overlay_vi.status_signal.emit(msg)
+        else:
+            print(f"[Dịch VI] {msg}")
+        if send_to_userscript and worker_holder["worker"] is not None:
+            worker_holder["worker"].send_json({"type": "status", "lang": "vi", "text": msg})
+
+    def _on_vi_subtitle(text: str, is_final: bool) -> None:
+        if overlay_vi is not None:
+            overlay_vi.subtitle_signal.emit(text, is_final)
+        if send_to_userscript and worker_holder["worker"] is not None:
+            worker_holder["worker"].send_json(
+                {"type": "subtitle", "lang": "vi", "text": text, "is_final": is_final}
+            )
+
+    translator: LocalLLMTranslator | None = None
+    if enable_vi:
+        llm_url = str(cfg.get("llm_api_url", "http://127.0.0.1:8080/v1/chat/completions"))
+        llm_model = str(cfg.get("llm_model", "translate-gemma-4-sub-e4b"))
         translator = LocalLLMTranslator(
             api_url=llm_url,
             model_name=llm_model,
-            on_translated=lambda text, is_final: overlay_vi.subtitle_signal.emit(text, is_final),
-            on_status=lambda msg: overlay_vi.status_signal.emit(msg),
+            on_translated=_on_vi_subtitle,
+            on_status=_on_vi_status,
             api_key=str(cfg.get("llm_api_key", "")),
             translate_interval=float(cfg.get("llm_translate_interval", 1.0)),
             context_sentences=int(cfg.get("llm_context_sentences", 2)),
@@ -138,42 +187,70 @@ def main() -> int:
         print(f"[Dịch VI] Đã bật Local LLM ({llm_model}) tại {llm_url}")
 
     def _on_en_subtitle(text: str, is_final: bool) -> None:
-        overlay_en.subtitle_signal.emit(text, is_final)
+        if overlay_en is not None:
+            overlay_en.subtitle_signal.emit(text, is_final)
+        if send_to_userscript and worker_holder["worker"] is not None:
+            worker_holder["worker"].send_json(
+                {"type": "subtitle", "lang": "en", "text": text, "is_final": is_final}
+            )
         if translator is not None:
             translator.submit(text, is_final)
 
     def _on_ws_reset() -> None:
         if translator is not None:
             translator.reset()
+        if send_to_userscript and worker_holder["worker"] is not None:
+            worker_holder["worker"].send_json({"type": "reset"})
 
+    client_hello = {
+        "type": "mode",
+        "display_mode": display_mode,
+        "enable_vi": enable_vi,
+        "font_size": font_size,
+    }
     worker = AudioWebSocketWorker(
         host=host,
         port=port,
         engine=engine,
         on_subtitle=_on_en_subtitle,
-        on_status=lambda msg: overlay_en.status_signal.emit(msg),
+        on_status=_on_en_status,
         on_reset=_on_ws_reset,
+        client_hello=client_hello,
     )
     worker_holder["worker"] = worker
     worker.start()
 
-    # Cho phép nhấn Ctrl+C trong terminal để thoát sạch
     signal.signal(signal.SIGINT, lambda *_: _shutdown_all())
-    keepalive_timer = QTimer()
-    keepalive_timer.timeout.connect(lambda: None)
-    keepalive_timer.start(250)
 
     print(
-        f"\n[Sẵn sàng] Mở tab xem giải CS2 trên trình duyệt và bấm nút bật phụ đề "
-        f"(trỏ tới ws://{host}:{port})."
+        f"\n[Sẵn sàng] Mở video/livestream YouTube và bấm nút 'AI SUB' (hoặc Alt+S) "
+        f"để kết nối tới ws://{host}:{port}."
     )
-    overlay_en.show()
-    if overlay_vi is not None:
-        overlay_vi.show()
 
-    exit_code = app.exec()
-    _shutdown_all()
-    return exit_code
+    if use_window and app is not None:
+        from PyQt6.QtCore import QTimer
+
+        keepalive_timer = QTimer()
+        keepalive_timer.timeout.connect(lambda: None)
+        keepalive_timer.start(250)
+
+        if overlay_en is not None:
+            overlay_en.show()
+        if overlay_vi is not None:
+            overlay_vi.show()
+
+        exit_code = app.exec()
+        _shutdown_all()
+        return exit_code
+
+    # Chế độ thuần Userscript: chạy gọn trên terminal, không mở cửa sổ PyQt6
+    print("[Chế độ Userscript] Phụ đề sẽ hiển thị trực tiếp trên trình phát YouTube. Nhấn Ctrl+C để thoát.")
+    try:
+        while not closing_flag["done"]:
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        _shutdown_all()
+    return 0
 
 
 if __name__ == "__main__":

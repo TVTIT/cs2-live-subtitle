@@ -1,4 +1,4 @@
-"""WebSocket Server nhận luồng 16kHz Mono Float32LE từ Browser Extension / Userscript."""
+"""WebSocket Server hai chiều: nhận âm thanh 16kHz Float32LE và gửi ngược phụ đề EN/VI về Userscript."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import queue
 import socket
 import threading
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 import websockets
@@ -43,6 +43,7 @@ class AudioWebSocketWorker:
         on_subtitle: SubtitleCallback,
         on_status: StatusCallback,
         on_reset: ResetCallback | None = None,
+        client_hello: dict[str, Any] | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -50,10 +51,12 @@ class AudioWebSocketWorker:
         self.on_subtitle = on_subtitle
         self.on_status = on_status
         self.on_reset = on_reset
+        self._client_hello = client_hello or {}
 
         self._audio_queue: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=120)
         self._stop_event = threading.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._clients: set[Any] = set()
         self._ws_thread: threading.Thread | None = None
         self._asr_thread: threading.Thread | None = None
 
@@ -66,12 +69,43 @@ class AudioWebSocketWorker:
 
     def stop(self) -> None:
         self._stop_event.set()
-        if self._loop is not None:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._loop is not None and not self._loop.is_closed():
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            except RuntimeError:
+                pass
         try:
             self._audio_queue.put_nowait(None)
         except queue.Full:
             pass
+
+    def send_json(self, payload: dict[str, Any]) -> None:
+        """Gửi gói JSON (phụ đề EN/VI, trạng thái) từ bất kỳ luồng nào tới các Userscript đang kết nối."""
+        loop = self._loop
+        if loop is None or loop.is_closed() or self._stop_event.is_set():
+            return
+        raw = json.dumps(payload, ensure_ascii=False)
+        try:
+            loop.call_soon_threadsafe(self._schedule_broadcast, raw)
+        except RuntimeError:
+            pass
+
+    def _schedule_broadcast(self, raw: str) -> None:
+        if not self._clients or self._loop is None:
+            return
+        self._loop.create_task(self._broadcast(raw))
+
+    async def _broadcast(self, raw: str) -> None:
+        if not self._clients:
+            return
+        stale: list[Any] = []
+        for ws in list(self._clients):
+            try:
+                await ws.send(raw)
+            except Exception:
+                stale.append(ws)
+        for ws in stale:
+            self._clients.discard(ws)
 
     def _asr_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -98,10 +132,19 @@ class AudioWebSocketWorker:
 
     async def _run_server(self) -> None:
         async def _handler(ws: websockets.ServerConnection) -> None:
+            self._clients.add(ws)
             self.on_status("Đã kết nối trình duyệt — đang nhận âm thanh...")
             self.engine.reset()
             if self.on_reset is not None:
                 self.on_reset()
+
+            # Báo ngay chế độ hiển thị cho Userscript biết có cần bật khung phụ đề trên YouTube không
+            if self._client_hello:
+                try:
+                    await ws.send(json.dumps(self._client_hello, ensure_ascii=False))
+                except Exception:
+                    pass
+
             try:
                 async for message in ws:
                     if self._stop_event.is_set():
@@ -125,6 +168,7 @@ class AudioWebSocketWorker:
             except websockets.ConnectionClosed:
                 pass
             finally:
+                self._clients.discard(ws)
                 self.engine.reset()
                 if self.on_reset is not None:
                     self.on_reset()

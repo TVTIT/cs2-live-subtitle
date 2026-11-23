@@ -1,4 +1,4 @@
-"""Bộ dịch phụ đề Anh -> Việt cục bộ qua Local LLM (Gemma 3 4B - OpenAI-compatible API)."""
+"""Bộ dịch phụ đề Anh -> Việt cục bộ qua Local LLM (tối ưu cho Translate Gemma 4 Sub E4B & Gemma 4 E4B)."""
 
 from __future__ import annotations
 
@@ -15,16 +15,22 @@ from typing import Callable
 TranslatedCallback = Callable[[str, bool], None]  # (vi_text, is_final)
 StatusCallback = Callable[[str], None]
 
+# Định dạng system prompt chuẩn của 17slever17/translate-gemma-4-sub-e4b
+# (tương thích tốt với cả Gemma 4 E4B và Gemma 3 4B gốc)
 DEFAULT_CS2_SYSTEM_PROMPT = (
-    "Bạn là biên dịch viên trực tiếp giải đấu Counter-Strike 2 (CS2) từ tiếng Anh sang tiếng Việt. "
-    "Dịch tự nhiên, ngắn gọn, đúng ngữ cảnh bình luận esport. "
-    "Giữ nguyên các thuật ngữ CS2 quen thuộc như: AWP, eco, force buy, clutch, retake, flank, "
-    "smoke, flash, molly, headshot, wallbang, ace, plant, defuse, site A, site B, mid, CT, T, Major, map. "
-    "CHỈ trả về duy nhất câu dịch tiếng Việt của câu cần dịch, không giải thích, không thêm tiền tố hay dấu ngoặc kép."
+    "TASK: Translate English subtitles into Vietnamese.\n"
+    "RULES: Live Counter-Strike 2 (CS2) esports commentary. Keep common CS2 terms in English: "
+    "AWP, eco, force buy, clutch, retake, flank, smoke, flash, molly, headshot, wallbang, ace, "
+    "plant, defuse, site A, site B, mid, CT, T, Major, map.\n"
+    "STYLE: friendly.\n"
+    "Translate only CURRENT_SOURCE. PREVIOUS_SOURCE and PREVIOUS_TRANSLATION are context only. "
+    "Preserve meaning, tone, slang, profanity, uncertainty, repetitions and incomplete speech. "
+    "Return only the final translation without labels or commentary."
 )
 
 _PREFIX_CLEAN_RE = re.compile(
-    r"^(?:bản dịch(?:\s+tiếng việt)?|dịch(?:\s+sang\s+tiếng việt)?|translation)\s*:\s*",
+    r"^(?:\[(?:CURRENT_TRANSLATION|TRANSLATION|CURRENT_SOURCE)\]\s*|"
+    r"(?:bản dịch(?:\s+tiếng việt)?|dịch(?:\s+sang\s+tiếng việt)?|translation)\s*:\s*)",
     flags=re.IGNORECASE,
 )
 
@@ -33,9 +39,9 @@ def _clean_llm_output(raw: str) -> str:
     text = raw.strip()
     if not text:
         return ""
-    # Bỏ thẻ <think>...</think> nếu người dùng đổi sang model có thinking
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-    # Gom nhiều dòng thành 1 dòng gọn gàng cho phụ đề
+    # Bỏ thẻ <think>...</think> hoặc <thought>...</thought> nếu server chưa tắt thinking
+    text = re.sub(r"<(?:think|thought)>.*?</(?:think|thought)>", "", text, flags=re.DOTALL).strip()
+    # Gom nhiều dòng thành 1 dòng gọn gàng cho cửa sổ phụ đề
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     text = " ".join(lines)
     text = _PREFIX_CLEAN_RE.sub("", text).strip()
@@ -45,7 +51,7 @@ def _clean_llm_output(raw: str) -> str:
 
 
 class LocalLLMTranslator:
-    """Chạy luồng dịch bất đồng bộ qua llama-server / Ollama (Gemma 3 4B) không chặn ASR hay GUI."""
+    """Chạy luồng dịch bất đồng bộ qua llama-server / Ollama không chặn ASR hay GUI."""
 
     def __init__(
         self,
@@ -60,7 +66,7 @@ class LocalLLMTranslator:
         timeout_sec: float = 12.0,
     ) -> None:
         self.api_url = api_url.strip()
-        self.model_name = model_name.strip() or "gemma-3-4b-it-qat"
+        self.model_name = model_name.strip() or "translate-gemma-4-sub-e4b"
         self.api_key = api_key.strip()
         self.on_translated = on_translated
         self.on_status = on_status
@@ -68,7 +74,8 @@ class LocalLLMTranslator:
         self.system_prompt = system_prompt.strip() or DEFAULT_CS2_SYSTEM_PROMPT
         self.timeout_sec = max(3.0, float(timeout_sec))
 
-        self._context: deque[str] = deque(maxlen=max(0, int(context_sentences)))
+        # Lưu cặp (câu tiếng Anh trước đó, bản dịch tiếng Việt trước đó)
+        self._context: deque[tuple[str, str]] = deque(maxlen=max(0, int(context_sentences)))
         self._final_queue: queue.Queue[str] = queue.Queue(maxsize=32)
 
         self._lock = threading.Lock()
@@ -145,22 +152,22 @@ class LocalLLMTranslator:
                     return
         except Exception:
             pass
-        self.on_status(
-            f"Chờ Local LLM ({self.model_name}) tại {self.api_url} ..."
-        )
+        self.on_status(f"Chờ Local LLM ({self.model_name}) tại {self.api_url} ...")
 
     def _build_user_prompt(self, current_text: str) -> str:
+        """Đóng gói user prompt theo đúng 3 thẻ [PREVIOUS_SOURCE], [PREVIOUS_TRANSLATION], [CURRENT_SOURCE]."""
         with self._lock:
             recent = list(self._context)
+
         if recent:
-            ctx_block = "\n".join(recent)
+            prev_src = " ".join(en for en, _ in recent)
+            prev_vi = " ".join(vi for _, vi in recent)
             return (
-                "Ngữ cảnh câu ngay trước đó (KHÔNG dịch phần này, chỉ tham khảo mạch câu):\n"
-                f"{ctx_block}\n\n"
-                "Dịch câu tiếng Anh sau sang tiếng Việt:\n"
-                f"{current_text}"
+                f"[PREVIOUS_SOURCE]\n{prev_src}\n"
+                f"[PREVIOUS_TRANSLATION]\n{prev_vi}\n"
+                f"[CURRENT_SOURCE]\n{current_text}"
             )
-        return f"Dịch câu tiếng Anh sau sang tiếng Việt:\n{current_text}"
+        return f"[CURRENT_SOURCE]\n{current_text}"
 
     def _call_llm(self, text: str) -> str:
         payload = {
@@ -210,8 +217,8 @@ class LocalLLMTranslator:
                     dt_ms = int((time.monotonic() - t0) * 1000)
                     if vi_text:
                         self.on_translated(vi_text, True)
-                    with self._lock:
-                        self._context.append(final_en)
+                        with self._lock:
+                            self._context.append((final_en, vi_text))
                     self._connected_once = True
                     self.on_status(f"Local LLM ({self.model_name}) • {dt_ms} ms")
                 except urllib.error.URLError as exc:
